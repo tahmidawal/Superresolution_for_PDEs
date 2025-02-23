@@ -11,6 +11,7 @@ import argparse
 from typing import Dict, List, Tuple
 import pandas as pd
 from datetime import datetime
+import time
 
 # Reuse existing functions
 from resolution_comparison_enhanced import (
@@ -30,13 +31,14 @@ def solve_multi_resolution(n_coarse: int = 40, resolutions: List[int] = [80, 160
     
     # Create solvers for each resolution
     solvers = {}
+    solve_times = {}  # Track solving time for each resolution
     for n_fine in resolutions:
         n_coarse_for_solver = n_fine // 2
         solvers[n_fine] = PoissonSolver(n_coarse=n_coarse_for_solver, n_fine=n_fine)
     
     # Generate random k values with higher frequencies for more challenging test
-    k1 = np.random.uniform(8.0, 12.0)  # Increased from (5.0, 8.0)
-    k2 = np.random.uniform(8.0, 12.0)  # Increased from (5.0, 8.0)
+    k1 = np.random.uniform(8.0, 12.0)
+    k2 = np.random.uniform(8.0, 12.0)
     print(f"Using wave numbers: k₁={k1:.2f}, k₂={k2:.2f}")
     
     # Generate fields on finest grid (640x640)
@@ -53,7 +55,8 @@ def solve_multi_resolution(n_coarse: int = 40, resolutions: List[int] = [80, 160
         'k2': k2,
         'f': {},
         'theta': {},
-        'u': {}
+        'u': {},
+        'solve_times': {}  # Add solving times to the data dictionary
     }
     
     # Downsample and solve for each resolution
@@ -68,7 +71,8 @@ def solve_multi_resolution(n_coarse: int = 40, resolutions: List[int] = [80, 160
             data['f'][res] = f_finest[::step, ::step]
             data['theta'][res] = theta_finest[::step, ::step]
         
-        # Solve PDE
+        # Solve PDE and measure time
+        start_time = time.time()
         if res == n_coarse:
             solver = PoissonSolver(n_coarse=res//2, n_fine=res)
             data['u'][res] = solver.solve_poisson(
@@ -82,9 +86,12 @@ def solve_multi_resolution(n_coarse: int = 40, resolutions: List[int] = [80, 160
                 data['theta'][res],
                 'fine'
             )
+        solve_time = time.time() - start_time
+        data['solve_times'][res] = solve_time
         
         print(f"\nSolution statistics for {res}x{res}:")
         print(f"u_{res} - min: {data['u'][res].min():.6f}, max: {data['u'][res].max():.6f}")
+        print(f"Solve time: {solve_time:.3f} seconds")
     
     return data
 
@@ -103,10 +110,13 @@ def run_single_example(model: torch.nn.Module, device: str,
     # Generate test data
     data = solve_multi_resolution(n_coarse=40, resolutions=resolutions)
     
-    # Initialize solution dictionaries
+    # Initialize solution dictionaries and timing measurements
     ml_solutions = {}
     bilinear_multi_solutions = {}
     bilinear_direct_solutions = {}
+    ml_times = {}
+    bilinear_multi_times = {}
+    bilinear_direct_times = {}
     
     # Store metrics for this example
     metrics = {
@@ -119,7 +129,11 @@ def run_single_example(model: torch.nn.Module, device: str,
         'bilinear_multi_mae': [],
         'bilinear_multi_rmse': [],
         'bilinear_direct_mae': [],
-        'bilinear_direct_rmse': []
+        'bilinear_direct_rmse': [],
+        'ml_times': [],
+        'bilinear_multi_times': [],
+        'bilinear_direct_times': [],
+        'solve_times': []
     }
     
     # Perform upscaling for each target resolution
@@ -128,24 +142,30 @@ def run_single_example(model: torch.nn.Module, device: str,
         
         # ML multi-level upscaling
         print("\nPerforming ML multi-level upscaling...")
+        start_time = time.time()
         ml_solutions[res] = ml_multi_level_upscale(
             model, data, res, device
         )
+        ml_times[res] = time.time() - start_time
         
         # Multi-level bilinear upscaling
         print("\nPerforming multi-level bilinear upscaling...")
+        start_time = time.time()
         bilinear_multi_solutions[res] = bilinear_multi_level_upscale(
             data, res
         )
+        bilinear_multi_times[res] = time.time() - start_time
         
         # Direct bilinear upscaling
         print("\nPerforming direct bilinear upscaling...")
+        start_time = time.time()
         bilinear_direct_solutions[res] = F.interpolate(
             torch.from_numpy(data['u'][40]).float().unsqueeze(0).unsqueeze(0),
             size=(res, res),
             mode='bilinear',
             align_corners=True
         ).squeeze().numpy()
+        bilinear_direct_times[res] = time.time() - start_time
         
         # Calculate metrics
         ml_mae = np.mean(np.abs(ml_solutions[res] - data['u'][res]))
@@ -157,7 +177,7 @@ def run_single_example(model: torch.nn.Module, device: str,
         bl_direct_mae = np.mean(np.abs(bilinear_direct_solutions[res] - data['u'][res]))
         bl_direct_rmse = np.sqrt(np.mean((bilinear_direct_solutions[res] - data['u'][res])**2))
         
-        # Store metrics
+        # Store metrics and times
         metrics['resolutions'].append(res)
         metrics['ml_mae'].append(ml_mae)
         metrics['ml_rmse'].append(ml_rmse)
@@ -165,11 +185,16 @@ def run_single_example(model: torch.nn.Module, device: str,
         metrics['bilinear_multi_rmse'].append(bl_multi_rmse)
         metrics['bilinear_direct_mae'].append(bl_direct_mae)
         metrics['bilinear_direct_rmse'].append(bl_direct_rmse)
+        metrics['ml_times'].append(ml_times[res])
+        metrics['bilinear_multi_times'].append(bilinear_multi_times[res])
+        metrics['bilinear_direct_times'].append(bilinear_direct_times[res])
+        metrics['solve_times'].append(data['solve_times'][res])
         
         print(f"\nResults for {res}x{res}:")
-        print(f"ML Multi-level - MAE: {ml_mae:.6f}, RMSE: {ml_rmse:.6f}")
-        print(f"Bilinear Multi-level - MAE: {bl_multi_mae:.6f}, RMSE: {bl_multi_rmse:.6f}")
-        print(f"Direct Bilinear - MAE: {bl_direct_mae:.6f}, RMSE: {bl_direct_rmse:.6f}")
+        print(f"ML Multi-level - MAE: {ml_mae:.6f}, RMSE: {ml_rmse:.6f}, Time: {ml_times[res]:.3f}s")
+        print(f"Bilinear Multi-level - MAE: {bl_multi_mae:.6f}, RMSE: {bl_multi_rmse:.6f}, Time: {bilinear_multi_times[res]:.3f}s")
+        print(f"Direct Bilinear - MAE: {bl_direct_mae:.6f}, RMSE: {bl_direct_rmse:.6f}, Time: {bilinear_direct_times[res]:.3f}s")
+        print(f"Direct Solver - Time: {data['solve_times'][res]:.3f}s")
     
     # Create comparison plots for this example
     plot_enhanced_resolution_comparison(
@@ -271,12 +296,94 @@ def plot_combined_metrics(all_metrics: List[Dict], save_dir: Path):
     plt.savefig(save_dir / 'combined_metrics_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
 
+def plot_computation_times(all_metrics: List[Dict], save_dir: Path):
+    """
+    Create plots comparing computation times across methods and resolutions.
+    """
+    plt.figure(figsize=(15, 10))
+    plt.title('Computation Time vs Resolution', fontsize=14)
+    
+    # Plot individual examples with transparency
+    colors = {
+        'ML Multi-level': 'blue',
+        'Bilinear Multi-level': 'green',
+        'Direct Bilinear': 'red',
+        'Direct Solver': 'purple'
+    }
+    
+    # Prepare data for plotting
+    df_list = []
+    for metrics in all_metrics:
+        for i, res in enumerate(metrics['resolutions']):
+            df_list.extend([
+                {
+                    'Resolution': res,
+                    'Method': 'ML Multi-level',
+                    'Time': metrics['ml_times'][i]
+                },
+                {
+                    'Resolution': res,
+                    'Method': 'Bilinear Multi-level',
+                    'Time': metrics['bilinear_multi_times'][i]
+                },
+                {
+                    'Resolution': res,
+                    'Method': 'Direct Bilinear',
+                    'Time': metrics['bilinear_direct_times'][i]
+                },
+                {
+                    'Resolution': res,
+                    'Method': 'Direct Solver',
+                    'Time': metrics['solve_times'][i]
+                }
+            ])
+    
+    df = pd.DataFrame(df_list)
+    
+    # Plot mean times with error bands
+    for method in colors.keys():
+        method_data = df[df['Method'] == method]
+        mean_time = method_data.groupby('Resolution')['Time'].mean()
+        std_time = method_data.groupby('Resolution')['Time'].std()
+        
+        plt.plot(mean_time.index, mean_time.values,
+                color=colors[method], linewidth=3, marker='o',
+                label=f'{method} (Mean)')
+        
+        # Add error bands
+        plt.fill_between(mean_time.index,
+                        mean_time.values - std_time.values,
+                        mean_time.values + std_time.values,
+                        color=colors[method], alpha=0.2)
+        
+        # Add value labels
+        for res, val in mean_time.items():
+            plt.text(res, val, f'{val:.3f}s',
+                    verticalalignment='bottom',
+                    horizontalalignment='right',
+                    color=colors[method])
+    
+    plt.xlabel('Resolution', fontsize=12)
+    plt.ylabel('Computation Time (seconds)', fontsize=12)
+    plt.legend(fontsize=10, bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.yscale('log')
+    plt.xscale('log', base=2)
+    plt.xticks(df['Resolution'].unique(), [f'{r}x{r}' for r in df['Resolution'].unique()])
+    
+    plt.tight_layout()
+    plt.savefig(save_dir / 'computation_times.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
 def plot_statistical_analysis(all_metrics: List[Dict], save_dir: Path):
     """
     Create statistical analysis plots from all examples.
     """
     # Create combined metrics plot
     plot_combined_metrics(all_metrics, save_dir)
+    
+    # Create computation times plot
+    plot_computation_times(all_metrics, save_dir)
     
     # Convert metrics to DataFrame for easier analysis
     df_list = []

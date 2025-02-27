@@ -24,8 +24,8 @@ def solve_multi_resolution(n_coarse: int = 40, resolutions: List[int] = [80, 160
         solvers[n_fine] = PoissonSolver(n_coarse=n_coarse_for_solver, n_fine=n_fine)
     
     # Generate random k values (higher frequency for challenging test)
-    k1 = np.random.uniform(5.0, 8.0)
-    k2 = np.random.uniform(5.0, 8.0)
+    k1 = np.random.uniform(10.0, 11.0)
+    k2 = np.random.uniform(10.0, 11.0)
     print(f"Using wave numbers: k₁={k1:.2f}, k₂={k2:.2f}")
     
     # Generate fields on finest grid (640x640)

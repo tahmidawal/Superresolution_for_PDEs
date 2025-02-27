@@ -1,0 +1,14 @@
+{
+    "batch_size": 32,
+    "num_epochs": 500,
+    "learning_rate": 0.0002,
+    "min_lr": 1e-06,
+    "patience": 10,
+    "early_stopping_patience": 20,
+    "val_split": 0.2,
+    "grad_clip": 1.0,
+    "device": "cpu",
+    "num_workers": 4,
+    "pin_memory": true,
+    "stratify_by_subdomain": true
+}
